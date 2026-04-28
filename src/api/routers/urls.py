@@ -15,6 +15,13 @@ from src.api.schemas import (
 from src.domain.entities import MonitoredURL
 from src.infrastructure.db.models import HourlyStatsModel, IncidentModel, MonitoredURLModel, RawCheckModel
 from src.infrastructure.db.session import get_session
+from src.infrastructure.db.repos import (
+    PostgreSQLCheckRepository,
+    PostgreSQLIncidentRepository,
+    PostgreSQLURLRepository,
+)
+from src.infrastructure.http_client import HTTPClient
+from src.application.monitor_url import MonitorURL
 
 router = APIRouter(prefix="/urls", tags=["URLs"])
 
@@ -108,4 +115,34 @@ def get_incidents(url_id: UUID, db: Session = Depends(get_db)):
         .filter_by(url_id=url_id)
         .order_by(IncidentModel.started_at.desc())
         .all()
+    )
+
+
+@router.post("/{url_id}/check", response_model=URLStatusResponse)
+def check_now(url_id: UUID, db: Session = Depends(get_db)):
+    url_model = db.query(MonitoredURLModel).filter_by(id=url_id).first()
+    if not url_model:
+        raise HTTPException(status_code=404, detail="URL no encontrada")
+
+    url = MonitoredURL(
+        id=url_model.id,
+        url=url_model.url,
+        name=url_model.name,
+        interval_minutes=url_model.interval_minutes,
+        is_active=url_model.is_active,
+        created_at=url_model.created_at,
+    )
+
+    use_case = MonitorURL(
+        check_repo=PostgreSQLCheckRepository(db),
+        incident_repo=PostgreSQLIncidentRepository(db),
+        http_client=HTTPClient(),
+    )
+    check = use_case.execute(url)
+
+    return URLStatusResponse(
+        url_id=url_id,
+        is_up=check.is_up,
+        last_checked_at=check.checked_at,
+        last_response_time_ms=check.response_time_ms,
     )
